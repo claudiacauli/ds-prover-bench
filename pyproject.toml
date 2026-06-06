@@ -1,0 +1,11 @@
+[project]
+name = "ds-prover-bench"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "torch==2.5.1",
+    "transformers==4.46.3",
+    "vllm==0.6.4.post1",
+]
