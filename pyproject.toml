@@ -12,3 +12,26 @@ dependencies = [
     "transformers==4.46.3",
     "vllm==0.6.4.post1",
 ]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "ipython>=9.14.1",
+    "pre-commit>=4.6.0",
+    "pyright>=1.1.410",
+    "ruff>=0.15.16",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]   # E/F = default lint; I = import sorting & grouping
+
+[tool.ruff]
+line-length = 100
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "basic"

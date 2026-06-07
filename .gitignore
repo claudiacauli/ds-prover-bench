@@ -8,3 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Runtime artifacts
+gen_checkpoint_*.jsonl
+lean_repl.log
