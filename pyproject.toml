@@ -34,4 +34,4 @@ line-length = 100
 [tool.pyright]
 venvPath = "."
 venv = ".venv"
-typeCheckingMode = "basic"
+typeCheckingMode = "strict"

@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 WORKSPACE: Final = Path("/workspace")
 PROJECT_ROOT: Final = WORKSPACE / "ds-prover-bench"
@@ -70,7 +70,7 @@ class EvalResult:
         return self.solved / self.evaluated if self.evaluated else 0.0
 
 
-def send_command(repl, command, timeout) -> dict:
+def send_command(repl: Any, command: dict[str, Any], timeout: int) -> dict[str, Any]:
     if repl.poll() is not None:
         raise RuntimeError(
             f"Lean REPL is dead (exit code {repl.returncode}); check lean_repl.log and restart it."
@@ -100,9 +100,9 @@ def send_command(repl, command, timeout) -> dict:
 
 
 class LeanRepl:
-    proc: subprocess.Popen
+    proc: subprocess.Popen[bytes]
 
-    def __init__(self, header):
+    def __init__(self, header: str):
         self.header = header
         self.start()
 
@@ -138,7 +138,7 @@ class LeanRepl:
             except subprocess.TimeoutExpired:
                 pass
 
-    def start(self, retries=3):
+    def start(self, retries: int = 3):
         last_err = None
         for attempt in range(1, retries + 1):
             try:
@@ -164,7 +164,12 @@ class LeanRepl:
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc, tb):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: Any | None,
+    ) -> None:
         self.close()
 
 
@@ -205,16 +210,16 @@ def config_hash(cfg: RunConfig):
     return hashlib.sha256(blob.encode()).hexdigest()[:8]
 
 
-def load_minif2f() -> list[dict]:
+def load_minif2f() -> list[dict[str, str]]:
     with open(MINI_F2F_PATH) as file:
-        tests = []
+        tests: list[dict[str, str]] = []
         for line in file:
-            entry = json.loads(line)
+            entry: dict[str, str] = json.loads(line)
             tests.append(entry)
     return tests
 
 
-def build_prompt(entry, cfg) -> str:
+def build_prompt(entry: dict[str, str], cfg: RunConfig) -> str:
     if cfg.prompt_style != "non_cot":
         raise ValueError(f"unsupported prompt_style: {cfg.prompt_style!r}")
     return (
@@ -223,7 +228,7 @@ def build_prompt(entry, cfg) -> str:
     )
 
 
-def call_llm(preloaded_llm, prompt, test_n, cfg) -> list:
+def call_llm(preloaded_llm: Any, prompt: str, test_n: int, cfg: RunConfig) -> list[dict[str, str]]:
     from vllm import SamplingParams
 
     params = SamplingParams(
@@ -238,19 +243,19 @@ def call_llm(preloaded_llm, prompt, test_n, cfg) -> list:
     return resp[0].outputs
 
 
-def process_resp(entry, resp_outputs, cfg) -> list[str]:
-    lean_files = []
+def process_resp(entry: dict[str, Any], resp_outputs: list[Any], cfg: RunConfig) -> list[str]:
+    lean_files: list[str] = []
     for output in resp_outputs:
         lean_files.append(build_lean(entry, output.text, cfg))
     return lean_files
 
 
-def build_lean(entry, resp_text, cfg) -> str:
-    proof = resp_text.split("```")[0]
+def build_lean(entry: dict[str, Any], resp_text: str, cfg: RunConfig) -> str:
+    proof: str = resp_text.split("```")[0]
     return f"set_option maxHeartbeats {cfg.max_heartbeats} in\n{entry['formal_statement']}{proof}"
 
 
-def is_proof_valid(resp) -> bool:
+def is_proof_valid(resp: dict[str, Any] | None) -> bool:
     # Validity is recorded only for hashing (and provenance).
     # There is no logic other than no_error_no_sorry
     if resp is None:
@@ -260,7 +265,9 @@ def is_proof_valid(resp) -> bool:
     return not has_error and not has_sorry
 
 
-def is_problem_solved(entry, test_n, preloaded_llm, lean_repl, cfg) -> bool:
+def is_problem_solved(
+    entry: dict[str, str], test_n: int, preloaded_llm: Any, lean_repl: LeanRepl, cfg: RunConfig
+) -> bool:
     prompt = build_prompt(entry, cfg)
     resp_outputs = call_llm(preloaded_llm, prompt, test_n, cfg)
     lean_files = process_resp(entry, resp_outputs, cfg)
@@ -280,11 +287,11 @@ def is_problem_solved(entry, test_n, preloaded_llm, lean_repl, cfg) -> bool:
     return False
 
 
-def load_already_solved(checkpoint) -> dict[str, bool]:
+def load_already_solved(checkpoint: Path) -> dict[str, bool]:
     # Caches everything from a previous run; whatever was already computed, it's now skipped.
     # This means that to re-compute something, one needs to manually delete the checkpoint
     # file, and force it to regenerate.
-    done = {}
+    done: dict[str, bool] = {}
     if not os.path.exists(checkpoint):
         return done
     with open(checkpoint) as file:
@@ -294,7 +301,13 @@ def load_already_solved(checkpoint) -> dict[str, bool]:
     return done
 
 
-def evaluate(tests, preloaded_llm, lean_repl, cfg, checkpoint) -> EvalResult:
+def evaluate(
+    tests: list[dict[str, Any]],
+    preloaded_llm: Any,
+    lean_repl: LeanRepl,
+    cfg: RunConfig,
+    checkpoint: Path,
+) -> EvalResult:
     already_solved = load_already_solved(checkpoint)
     evaluated = solved = 0
     for i, entry in enumerate(tests):
@@ -321,7 +334,7 @@ def evaluate(tests, preloaded_llm, lean_repl, cfg, checkpoint) -> EvalResult:
     return EvalResult(evaluated=evaluated, total=len(tests), solved=solved)
 
 
-def shared_header(tests) -> str:
+def shared_header(tests: list[dict[str, str]]) -> str:
     headers = {t["header"] for t in tests}
     if len(headers) != 1:
         raise ValueError(
@@ -331,7 +344,13 @@ def shared_header(tests) -> str:
     return headers.pop()
 
 
-def main(preloaded_llm, lean_repl, cfg, tests, resume=None) -> None:
+def main(
+    preloaded_llm: Any,
+    lean_repl: LeanRepl,
+    cfg: RunConfig,
+    tests: list[dict[str, Any]],
+    resume: Path | None = None,
+) -> None:
     if resume is None:
         # fresh run
         ts = datetime.now().strftime("%Y%m%d%H%M%S")
@@ -368,7 +387,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     cfg = build_config()
-    tests = [t for t in load_minif2f() if t["split"] == cfg.split]
+    tests: list[dict[str, str]] = [t for t in load_minif2f() if t["split"] == cfg.split]
     header = shared_header(tests)
     if args.resume_latest:
         matches = sorted(PROJECT_ROOT.glob(f"gen_checkpoint_{config_hash(cfg)}_*.jsonl"))
