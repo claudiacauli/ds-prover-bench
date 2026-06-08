@@ -12,3 +12,6 @@ wheels/
 # Runtime artifacts
 gen_checkpoint_*.jsonl
 lean_repl.log
+
+# LLM models
+models/

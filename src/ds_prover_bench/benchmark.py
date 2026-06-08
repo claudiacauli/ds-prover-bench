@@ -15,10 +15,10 @@ from pathlib import Path
 from typing import Any, Final
 
 WORKSPACE: Final = Path("/workspace")
-PROJECT_ROOT: Final = WORKSPACE / "ds-prover-bench"
+PROJECT_ROOT: Final = Path(__file__).resolve().parents[2]
 
 MINI_F2F_PATH: Final = PROJECT_ROOT / "data" / "minif2f.jsonl"
-DEEPSEEK_PROVER_V2_7B: Final = WORKSPACE / "models" / "DeepSeek-Prover-V2-7B"
+DEEPSEEK_PROVER_V2_7B: Final = PROJECT_ROOT / "models" / "DeepSeek-Prover-V2-7B"
 LAKE_PATH: Final = WORKSPACE / "elan" / "bin" / "lake"
 MATHLIB_DIR: Final = WORKSPACE / "DeepSeek-Prover-V1.5" / "mathlib4"
 LEAN_REPL_LOG: Final = PROJECT_ROOT / "lean_repl.log"
@@ -185,9 +185,11 @@ def _lean_version() -> str:
     return (MATHLIB_DIR / "lean-toolchain").read_text().strip()
 
 
-def build_config() -> RunConfig:
+def build_config(model_path: Path | None = None) -> RunConfig:
     return RunConfig(
-        model_path=str(DEEPSEEK_PROVER_V2_7B),
+        model_path=str(
+            Path(model_path if model_path is not None else DEEPSEEK_PROVER_V2_7B).resolve()
+        ),
         model_revision="local",
         n=4,
         temperature=1.0,
@@ -379,6 +381,15 @@ def main(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--model-path",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help=(
+            "path to the DeepSeek-Prover-V2-7B model (default: <repo>/models/DeepSeek-Prover-V2-7B)"
+        ),
+    )
     g = parser.add_mutually_exclusive_group()
     g.add_argument(
         "--resume", type=Path, default=None, metavar="CHECKPOINT", help="resume existing checkpoint"
@@ -386,7 +397,13 @@ if __name__ == "__main__":
     g.add_argument("--resume-latest", action="store_true", help="resume latest checkpoint")
     args = parser.parse_args()
 
-    cfg = build_config()
+    cfg = build_config(model_path=args.model_path)
+    if not Path(cfg.model_path).exists():
+        sys.exit(
+            f"model not found at {cfg.model_path}. "
+            "Run ./install.sh or pass --model-path with a valid path"
+        )
+
     tests: list[dict[str, str]] = [t for t in load_minif2f() if t["split"] == cfg.split]
     header = shared_header(tests)
     if args.resume_latest:
