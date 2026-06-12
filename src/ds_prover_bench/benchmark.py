@@ -10,7 +10,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from enum import Enum
+from enum import Enum, StrEnum
 from pathlib import Path
 from typing import Any, Final
 
@@ -31,6 +31,11 @@ class Color:
     RESET: Final = "\033[0m" if _enabled else ""
 
 
+class Split(StrEnum):
+    TEST = "test"
+    VALID = "valid"
+
+
 @dataclass(frozen=True)
 class RunConfig:
     model_path: str
@@ -45,14 +50,36 @@ class RunConfig:
     mathlib_commit: str
     lean_version: str
     validity: str
-    split: str
+    split: Split
     verify_timeout_s: int
     max_model_len: int
+
+
+@dataclass(frozen=True)
+class Minif2fEntry:
+    name: str
+    split: Split
+    informal_prefix: str
+    formal_statement: str
+    goal: str
+    header: str
 
 
 class Completion(Enum):
     TOTAL = "Total"
     PARTIAL = "Partial"
+
+
+@dataclass(frozen=True)
+class ProblemResult:
+    config_hash: str
+    problem_name: str
+    formal_statement_hash: str
+    model_completions: tuple[str, ...]
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return (self.config_hash, self.problem_name)
 
 
 @dataclass(frozen=True)
@@ -201,32 +228,41 @@ def build_config(model_path: Path | None = None) -> RunConfig:
         mathlib_commit=_mathlib_commit(),
         lean_version=_lean_version(),
         validity="no_error_no_sorry",
-        split="test",
+        split=Split.TEST,
         verify_timeout_s=300,
         max_model_len=4096,
     )
 
 
-def config_hash(cfg: RunConfig):
+def config_hash(cfg: RunConfig) -> str:
     blob = json.dumps(asdict(cfg), sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()[:8]
 
 
-def load_minif2f() -> list[dict[str, str]]:
+def load_minif2f() -> list[Minif2fEntry]:
     with open(MINI_F2F_PATH) as file:
-        tests: list[dict[str, str]] = []
+        tests: list[Minif2fEntry] = []
         for line in file:
             entry: dict[str, str] = json.loads(line)
-            tests.append(entry)
+            tests.append(
+                Minif2fEntry(
+                    name=entry["name"],
+                    split=Split(entry["split"]),
+                    informal_prefix=entry["informal_prefix"],
+                    formal_statement=entry["formal_statement"],
+                    goal=entry["goal"],
+                    header=entry["header"],
+                )
+            )
     return tests
 
 
-def build_prompt(entry: dict[str, str], cfg: RunConfig) -> str:
+def build_prompt(entry: Minif2fEntry, cfg: RunConfig) -> str:
     if cfg.prompt_style != "non_cot":
         raise ValueError(f"unsupported prompt_style: {cfg.prompt_style!r}")
     return (
-        f"Complete the following Lean 4 code:\n\n```lean4\n{entry['header']}"
-        f"{entry['informal_prefix']}{entry['formal_statement']}"
+        f"Complete the following Lean 4 code:\n\n```lean4\n{entry.header}"
+        f"{entry.informal_prefix}{entry.formal_statement}"
     )
 
 
@@ -245,16 +281,23 @@ def call_llm(preloaded_llm: Any, prompt: str, test_n: int, cfg: RunConfig) -> li
     return resp[0].outputs
 
 
-def process_resp(entry: dict[str, Any], resp_outputs: list[Any], cfg: RunConfig) -> list[str]:
-    lean_files: list[str] = []
+def process_resp(entry: Minif2fEntry, resp_outputs: list[Any], cfg: RunConfig) -> ProblemResult:
+    completions: list[str] = []
     for output in resp_outputs:
-        lean_files.append(build_lean(entry, output.text, cfg))
-    return lean_files
+        completions.append(output.text)
+    return ProblemResult(
+        config_hash=config_hash(cfg),
+        problem_name=entry.name,
+        formal_statement_hash=hashlib.sha256(entry.formal_statement.encode("utf-8")).hexdigest()[
+            :16
+        ],
+        model_completions=tuple(completions),
+    )
 
 
-def build_lean(entry: dict[str, Any], resp_text: str, cfg: RunConfig) -> str:
+def build_lean(entry: Minif2fEntry, resp_text: str, cfg: RunConfig) -> str:
     proof: str = resp_text.split("```")[0]
-    return f"set_option maxHeartbeats {cfg.max_heartbeats} in\n{entry['formal_statement']}{proof}"
+    return f"set_option maxHeartbeats {cfg.max_heartbeats} in\n{entry.formal_statement}{proof}"
 
 
 def is_proof_valid(resp: dict[str, Any] | None) -> bool:
@@ -268,15 +311,16 @@ def is_proof_valid(resp: dict[str, Any] | None) -> bool:
 
 
 def is_problem_solved(
-    entry: dict[str, str], test_n: int, preloaded_llm: Any, lean_repl: LeanRepl, cfg: RunConfig
+    entry: Minif2fEntry, test_n: int, preloaded_llm: Any, lean_repl: LeanRepl, cfg: RunConfig
 ) -> bool:
     prompt = build_prompt(entry, cfg)
     resp_outputs = call_llm(preloaded_llm, prompt, test_n, cfg)
-    lean_files = process_resp(entry, resp_outputs, cfg)
-    for body in lean_files:
+    problem_result = process_resp(entry, resp_outputs, cfg)
+    for completion in problem_result.model_completions:
+        lean = build_lean(entry, completion, cfg)
         try:
             resp = send_command(
-                lean_repl.proc, {"cmd": body, "env": 0}, timeout=cfg.verify_timeout_s
+                lean_repl.proc, {"cmd": lean, "env": 0}, timeout=cfg.verify_timeout_s
             )
         except (TimeoutError, RuntimeError):
             print(" ⏱ Timeout or REPL killed", end=" ", flush=True)
@@ -304,7 +348,7 @@ def load_already_solved(checkpoint: Path) -> dict[str, bool]:
 
 
 def evaluate(
-    tests: list[dict[str, Any]],
+    tests: list[Minif2fEntry],
     preloaded_llm: Any,
     lean_repl: LeanRepl,
     cfg: RunConfig,
@@ -313,7 +357,7 @@ def evaluate(
     already_solved = load_already_solved(checkpoint)
     evaluated = solved = 0
     for i, entry in enumerate(tests):
-        name = entry["name"]
+        name = entry.name
         if name in already_solved:
             verdict = already_solved[name]
             print(f" • [Test #{i}] Recovered from checkpoint", end=" ", flush=True)
@@ -336,8 +380,8 @@ def evaluate(
     return EvalResult(evaluated=evaluated, total=len(tests), solved=solved)
 
 
-def shared_header(tests: list[dict[str, str]]) -> str:
-    headers = {t["header"] for t in tests}
+def shared_header(tests: list[Minif2fEntry]) -> str:
+    headers = {t.header for t in tests}
     if len(headers) != 1:
         raise ValueError(
             f"LeanRepl builds one env from one header, but there are {len(headers)} "
@@ -350,7 +394,7 @@ def main(
     preloaded_llm: Any,
     lean_repl: LeanRepl,
     cfg: RunConfig,
-    tests: list[dict[str, Any]],
+    tests: list[Minif2fEntry],
     resume: Path | None = None,
 ) -> None:
     if resume is None:
@@ -404,7 +448,7 @@ if __name__ == "__main__":
             "Run ./install.sh or pass --model-path with a valid path"
         )
 
-    tests: list[dict[str, str]] = [t for t in load_minif2f() if t["split"] == cfg.split]
+    tests: list[Minif2fEntry] = [t for t in load_minif2f() if t.split == cfg.split]
     header = shared_header(tests)
     if args.resume_latest:
         matches = sorted(PROJECT_ROOT.glob(f"gen_checkpoint_{config_hash(cfg)}_*.jsonl"))
